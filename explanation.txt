@@ -1,0 +1,148 @@
+The first child (pid1 == 0) executes cmd1 with the input from the infile and writes its output to the pipe.
+The second child (pid2 == 0) executes cmd2 with the input from the pipe and writes its output to the outfile.
+The parent process closes the pipe and waits for both children to finish.
+This should prevent the program from hanging and ensure proper execution of the commands.
+
+your code works, which is great, but why do i need 4 filedescriptors for that, like 2 which are 
+called fd and another infile and outfile, furthermore, we are duplicating them multiple times
+ChatGPT
+The use of multiple file descriptors and their duplication is necessary to properly set up the 
+redirection of input and output for the commands executed by the child processes.
+ Let’s break down the need and usage of these file descriptors step by step.
+
+Explanation of File Descriptors
+Pipe file descriptors (fd):
+
+fd[0] is the read end of the pipe.
+fd[1] is the write end of the pipe.
+The pipe is used for communication between the two child processes: the first child writes to 
+the pipe, and the second child reads from the pipe.
+File descriptors for files (infile and outfile):
+
+infile is used to read from the input file.
+outfile is used to write to the output file.
+These are necessary because the child processes need to redirect their standard input and output
+ to/from these files.
+Detailed Steps of File Descriptor Usage
+First Child (Executing cmd1):
+
+Opens the input file (infile).
+Duplicates infile to STDIN_FILENO so that cmd1 reads from the file instead of the standard input.
+Duplicates fd[1] to STDOUT_FILENO so that cmd1 writes to the pipe instead of the standard output.
+Closes the original infile and both ends of the pipe (not needed after duplication).
+Second Child (Executing cmd2):
+
+Opens the output file (outfile).
+Duplicates fd[0] to STDIN_FILENO so that cmd2 reads from the pipe instead of the standard input.
+Duplicates outfile to STDOUT_FILENO so that cmd2 writes to the file instead of the standard output.
+Closes the original outfile and both ends of the pipe (not needed after duplication).
+Why Duplication is Necessary
+Duplication (dup2) is used to redirect the standard input/output of the processes. Here’s why it's essential:
+
+When you use dup2(infile, STDIN_FILENO), it makes the file descriptor for the input file take over the
+ standard input. This means any subsequent read operations (like those done by execve running cmd1) will
+  read from the input file.
+Similarly, dup2(fd[1], STDOUT_FILENO) makes the pipe write end take over the standard output. Thus, any 
+write operations (like those done by execve running cmd1) will write into the pipe.
+The same logic applies to the second child, ensuring it reads from the pipe and writes to the output
+ file.
+
+By properly managing file descriptors and ensuring that each process has the correct input and output
+ redirection, you avoid hanging and ensure correct data flow through the pipe.
+
+so i see why duplication is necessary, but why isnt it possible to simply redirect the infile input and
+ fd1 output directly to where we want it, instead of duplicating and immediately closing it afterwards.
+  that seems like redirecting with an extra step 
+ChatGPT
+The reason we use dup2 and close the original file descriptors immediately afterward is because of how 
+file descriptor inheritance works in Unix-like systems, particularly during the execve system call.
+
+Key Concepts:
+File Descriptor Inheritance: When a process is created,
+ it inherits copies of its parent's file descriptors.
+  This includes the standard input (STDIN_FILENO), standard output (STDOUT_FILENO), 
+  and standard error (STDERR_FILENO). These descriptors are typically 0, 1, and 2, respectively.
+
+Redirecting Standard Streams: Many programs and system calls expect to use these standard
+ file descriptors. By duplicating (dup2), we ensure that the specific file descriptor we need
+  is exactly where the standard input/output is expected (0 for input, 1 for output).
+
+Closing Unneeded Descriptors: After duplication, the original descriptors are no longer needed 
+and can be closed. This is done to free resources and to ensure no unintended reads or writes 
+happen through those descriptors.
+
+Detailed Explanation with Example:
+Imagine the steps without dup2 and closing of original descriptors:
+
+Opening Files: If we simply open the files and use them without redirection, we would have 
+to ensure that every system call and library function uses these specific file descriptors. 
+This can be error-prone and is not how standard C library functions expect to operate.
+
+Using dup2: When we use dup2, we explicitly redirect the standard input/output to the desired 
+file descriptors. This allows the subsequent execve call to operate on these standard streams as
+ expected by the executed program.
+
+Here’s an illustrative step-by-step explanation with the current process:
+
+Current Approach Using dup2:
+Open Input File:
+
+int infile = open(argv[1], O_RDONLY);
+infile now has a file descriptor (e.g., 3).
+Redirect Input:
+
+dup2(infile, STDIN_FILENO);
+Standard input (file descriptor 0) now points to infile.
+Close infile because it's duplicated to STDIN_FILENO.
+Open Output File:
+
+int outfile = open(argv[4], O_WRONLY | O_CREAT | O_TRUNC, 0644);
+outfile now has a file descriptor (e.g., 4).
+Redirect Output:
+
+dup2(outfile, STDOUT_FILENO);
+Standard output (file descriptor 1) now points to outfile.
+Close outfile because it's duplicated to STDOUT_FILENO.
+Pipe:
+
+pipe(fd);
+fd[0] for reading, fd[1] for writing.
+First Child:
+
+dup2(fd[1], STDOUT_FILENO); // Redirects stdout to the pipe's write end.
+Close fd[0] and fd[1] after duplication.
+Second Child:
+
+dup2(fd[0], STDIN_FILENO); // Redirects stdin to the pipe's read end.
+Close fd[0] and fd[1] after duplication.
+Attempting to Avoid dup2 (Hypothetical and Incorrect):
+Open Input File:
+
+int infile = open(argv[1], O_RDONLY);
+The process now reads from infile.
+Pipe:
+
+pipe(fd);
+Writing directly to fd[1] instead of STDOUT_FILENO.
+Execute Command 1:
+
+Instead of redirecting, you'd have to make sure every read/write operates directly on infile and fd[1].
+Open Output File:
+
+int outfile = open(argv[4], O_WRONLY | O_CREAT | O_TRUNC, 0644);
+Writing directly to outfile instead of STDOUT_FILENO.
+Execute Command 2:
+
+Ensuring every read/write operates on fd[0] and outfile.
+Why This Doesn’t Work:
+Exec Functions Expect Standard Streams: The execve function and many standard library functions expect to read
+ from STDIN_FILENO (0) and write to STDOUT_FILENO (1). Without using dup2, you would need to alter the 
+ commands themselves or use low-level I/O functions with specific file descriptors, which is impractical
+ and error-prone.
+Resource Management: Not closing unneeded file descriptors can lead to resource leaks and unexpected 
+behavior as the child processes might inherit unwanted open file descriptors.
+Summary:
+The dup2 system call and the subsequent closing of original file descriptors is the standard, efficient 
+way to ensure that the child processes have their input and output redirected correctly. It leverages the 
+expectation that standard streams are on file descriptors 0 and 1, simplifying the process of managing I/O 
+redirection. This approach aligns with how most programs and the standard library are designed to operate.
